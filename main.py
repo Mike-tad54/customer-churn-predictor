@@ -1,7 +1,7 @@
 import json
 import joblib
 import pandas as pd
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_validate, StratifiedKFold
 from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix
 from sklearn.linear_model import LogisticRegression
 from sklearn.dummy import DummyClassifier
@@ -10,16 +10,7 @@ from xgboost import XGBClassifier
 pd.set_option('display.max_rows', None)
 
 data = pd.read_csv("data/ProcessedData.csv")
-data["tenure_bucket"] = pd.cut(data["tenure"], 6, include_lowest=True, labels=["A", "B", "C", "D", "E", "F"])
 X = data.drop(columns=["Churn", "Churn_Numeric", "customerID"])
-for i, v in X["Contract"].items():
-    if v == "Month-to-month":
-        X.loc[i, "ContractxCharges"] = 1 * X.loc[i, "MonthlyCharges"]
-    if v == "One year":
-        X.loc[i, "ContractxCharges"] = 12 * X.loc[i, "MonthlyCharges"]
-    if v == "Two year":
-        X.loc[i, "ContractxCharges"] = 24 * X.loc[i, "MonthlyCharges"]
-
 X = pd.get_dummies(X, dtype=float)
 Y = data["Churn_Numeric"]
 
@@ -60,6 +51,15 @@ dummy_confusion = confusion_matrix(y_test, dummy_pred)
 print(f"My Dummy Accuracy: {dummy_accuracy}%")
 print(f"Dummy Recall: {dummy_recall}%  Dummy Precision: {dummy_precision}%")
 print(f"Dummy Confusion: {dummy_confusion}")
+
+splitter = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+for name, cv_estimator in [("Logistic Regression", LogisticRegression(max_iter=10000)),
+                           ("XGBoost", XGBClassifier(random_state=42))]:
+    results = cross_validate(cv_estimator, X, Y, cv=splitter, scoring=["accuracy", "recall", "precision"])
+    print(f"{name} 5-fold CV")
+    for metric in ["accuracy", "recall", "precision"]:
+        scores = results[f"test_{metric}"]
+        print(f"  {metric}: {scores.mean() * 100:.1f}% +/- {scores.std() * 100:.1f}")
 
 
 def Predict(customers):
