@@ -15,7 +15,7 @@ Format for each entry: what I tried, what happened, and what I chose.
 Three takeaways:
 
 1. **Contract type drives churn.** Churn is about 43% on month-to-month contracts, 11% on one-year, and 3% on two-year. Customer loyalty rises with contract length. Contract will matter in any model.
-2. **Tenure is bimodal.** One large spike at 0-4 months and another at about 70 months. The left spike is new customers, who are the most likely to leave. The model may need to treat new customers differently.
+2. **Tenure is bimodal.** One large spike at 0-4 months and another at about 70 months. The left spike is new customers, who are the most likely to leave.
 3. **Churners pay more.** The boxplot shows the median monthly charge is about 80 for churners vs. about 65 for non-churners. (A boxplot shows the median as the line in the box, the middle 50% of values as the box, and the range as the whiskers.) Higher bills may push customers away.
 
 - **Decision:** a bar chart would suit the contract plot better than a line, since contract types are categories with no order in between. Left as a line for now.
@@ -40,7 +40,7 @@ Three takeaways:
 ### One-hot encoding
 
 - **Tried:** `pd.get_dummies` on all categorical columns, dropping `customerID`, `Churn`, and `Churn_Numeric` first. Dropping the target columns matters: leaving them in would leak the answer and give a near-perfect score.
-- **Result:** recall rose from 47.5% to 59.8% (accuracy 82.0%, precision 68.4%). More columns gave the model more signal.
+- **Result:** 45 features. Recall rose from 47.5% to 59.8% (accuracy 82.0%, precision 68.4%) on the single split. More columns gave the model more signal.
 
 ### Feature engineering
 
@@ -48,8 +48,7 @@ Three takeaways:
 - **First attempt:** recall dropped to 53.4%.
   - **Cause:** I overwrote the original `tenure` column with the buckets, so the model lost exact tenure.
   - **Lesson:** add engineered features alongside the originals. Check each change against the previous score.
-- **After the fix:** recall 56.8%, accuracy 81.3%, precision 67.3%. Still below the 59.8% without engineered features.
-  - **Conclusion:** the two engineered features did not help Logistic Regression. Not every idea works.
+- **After the fix:** recall 56.8% on the single split, still below the 59.8% without them. Cross-validation later confirmed this (see below).
 - **`pd.cut` notes:** use `include_lowest=True` so `tenure = 0` isn't dropped to NaN. Use `labels=` for plain names, because XGBoost rejects feature names containing `[`, `]`, or `<`.
 
 ### Normalization
@@ -65,11 +64,12 @@ Three takeaways:
 ### XGBoost
 
 - **Expected:** XGBoost to beat Logistic Regression.
-- **Result:** it did not. Accuracy 80.2%, recall 55.0%, precision 64.9%.
-- **Likely cause:** default settings overfit a small, mostly weak-signal dataset. The gap is about 7 customers, so the two models are effectively tied on this split.
+- **Result (single split, 52 features):** it did not. Accuracy 80.2%, recall 55.0%, precision 64.9%.
+- **Likely cause:** default settings overfit a small, mostly weak-signal dataset.
+- **Mistake:** I passed `max_iter=10000` to XGBoost. It isn't an XGBoost parameter and was ignored, with a warning.
 - **Lesson:** a fancier model is not automatically better. On simple tabular data, Logistic Regression is hard to beat without tuning.
 
-### Confusion matrices
+### Confusion matrices (single split, 52 features)
 
 | Model | Correct "No" | False alarms | Missed churners | Caught churners |
 |---|---|---|---|---|
@@ -78,20 +78,37 @@ Three takeaways:
 | Dummy | 1036 | 0 | 373 | 0 |
 
 - **Bug:** I multiplied the confusion matrix by 100 (copied from the percentage metrics). Counts are not percentages.
-- The model misses 161 of 373 churners (43%). For churn, a missed customer usually costs more than a false alarm.
+- For churn, a missed customer usually costs more than a false alarm.
 
 ## Day 5: Saving the model
 
 - **Decision:** train once, save with `joblib`, and load in `Predict()`. Retraining on every call is slow and not how real systems work.
-- **Bug:** I first saved `data.columns` to `columns.json`. The model is trained on `X`, not `data`. Fixed to `X.columns`. The file now lists the 52 training features.
-- **Note for the API project (1.7):**
-  - A single raw customer, once one-hot encoded, only has columns for its own values. Rebuild all 52 columns from `columns.json`, filling missing ones with 0.
-  - `pd.cut(tenure, 6)` computes edges from the data. A single customer needs fixed edges.
+- **Bug:** I first saved `data.columns` to `columns.json`. The model is trained on `X`, not `data`. Fixed to `X.columns`.
+- **Note for the API project (1.7):** a single raw customer, once one-hot encoded, only has columns for its own values. Rebuild all feature columns from `columns.json`, filling missing ones with 0.
 
-## Open items
+## Day 6: Cross-validation and final model
 
-- [ ] **5-fold cross-validation** for Logistic Regression and XGBoost, so the comparison doesn't rest on one split.
-- [ ] **Model choice to revisit:** the saved model includes the engineered features, but the version without them scored slightly higher on this split (recall 59.8% vs. 56.8%). Decide after cross-validation.
-- [ ] **Error analysis on the 161 missed churners:** compare them with the caught churners (contract, tenure, monthly charges).
+- **Problem:** single-split scores were noisy. The 2-point gaps between models were about 7 customers, within chance.
+- **Tried:** stratified 5-fold cross-validation (`shuffle=True`, `random_state=42`), using the same folds for every model.
+
+| Model | Features | Accuracy | Recall | Precision |
+|---|---|---|---|---|
+| Logistic | 52 (with engineered) | 80.4% ± 0.8 | 52.9% ± 2.0 | 66.3% ± 1.8 |
+| XGBoost | 52 (with engineered) | 78.7% ± 1.1 | 52.8% ± 2.1 | 61.4% ± 2.7 |
+| Logistic | 45 (plain) | 80.5% ± 1.0 | 55.4% ± 2.9 | 65.8% ± 1.9 |
+| XGBoost | 45 (plain) | 78.5% ± 0.7 | 52.0% ± 1.3 | 61.1% ± 1.8 |
+
+- **Findings:**
+  - The single-split recall of 56.8% (and 59.8%) was lucky. The honest estimate is about 55%.
+  - Logistic Regression beats XGBoost on accuracy and precision in every setup. On recall it ties with the 52-feature set and wins with the 45-feature set.
+  - The engineered features lowered Logistic recall under CV (55.4% → 52.9%). They likely repeat information already in `tenure`, `Contract`, and `MonthlyCharges`.
+- **Decision:** the final model is Logistic Regression on the 45 plain features. `model/logistic_model.pkl` and `model/columns.json` were rebuilt to match.
+- **Check:** the rebuilt model reproduces the earlier 45-feature single-split result (82.0% accuracy, 59.8% recall, 68.4% precision). Confusion matrix: 933 / 103 / 150 / 223.
+- **Lesson:** compare models on the same folds, and test each feature idea with CV before keeping it.
+
+## Open items (optional)
+
+- [ ] Error analysis of the 150 missed churners: compare them with the caught churners (contract, tenure, monthly charges).
+- [ ] Try a lower decision threshold to trade precision for recall.
 - [ ] Add a scaling step inside a pipeline.
-- [ ] Tag `v1.0` after the above.
+- [ ] Tune XGBoost.
